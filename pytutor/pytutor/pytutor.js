@@ -38,6 +38,10 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 <script type="text/javascript" src="js/jquery-ui-1.8.24.custom.min.js"></script> <!-- for sliders and other UI elements -->
 <link type="text/css" href="css/ui-lightness/jquery-ui-1.8.24.custom.css" rel="stylesheet" />
 
+<!-- for annotation bubbles -->
+<script type="text/javascript" src="js/jquery.qtip.min.js"></script>
+<link type="text/css" href="css/jquery.qtip.css" rel="stylesheet" />
+
 <script type="text/javascript" src="js/pytutor.js"></script>
 <link rel="stylesheet" href="css/pytutor.css"/>
 
@@ -54,10 +58,6 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
   embedded within a webpage, due to multiple matches in the global namespace.
 
 */
-
-// TODO: this can lead to HUGE memory usage if a lot of visualizers are being created
-// and then deleted, since we don't currently remove visualizers from this list ...
-var allVisualizers = []; // global array of ALL visualizers ever on the page
 
 
 var SVG_ARROW_POLYGON = '0,3 12,3 12,0 18,5 12,10 12,7 0,7';
@@ -76,18 +76,17 @@ var curVisualizerID = 1; // global to uniquely identify each ExecutionVisualizer
 //   codeDivHeight - maximum height of #pyCodeOutputDiv (in integer pixels)
 //   codeDivWidth  - maximum width  of #pyCodeOutputDiv (in integer pixels)
 //   editCodeBaseURL - the base URL to visit when the user clicks 'Edit code' (if null, then 'Edit code' link hidden)
-//   embeddedMode    - shortcut for hideOutput=true, codeDivWidth=350, codeDivHeight=400
+//   allowEditAnnotations - allow user to edit per-step annotations (default: true)
+//   embeddedMode         - shortcut for hideOutput=true, allowEditAnnotations=false
+//                          codeDivWidth=350, codeDivHeight=400
 //   updateOutputCallback - function to call (with 'this' as parameter)
 //                          whenever this.updateOutput() is called
 //                          (BEFORE rendering the output display)
 //   heightChangeCallback - function to call (with 'this' as parameter)
 //                          whenever the HEIGHT of #dataViz changes
-//   redrawAllConnectorsOnHeightChange - if this is non-null, then call redrawConnectors() in ALL ExecutionVisualizer
-//                                       objects on this page whenever the height of ANY of them changes.
-//                                       (NB: This might be inefficient and overkill; use at your own discretion.)
 //   verticalStack - if true, then stack code display ON TOP of visualization
 //                   (else place side-by-side)
-function ExecutionVisualizer(domRoot, dat, params) {
+function ExecutionVisualizer(domRootID, dat, params) {
   this.curInputCode = dat.code.rtrim(); // kill trailing spaces
   this.curTrace = dat.trace;
 
@@ -142,8 +141,8 @@ function ExecutionVisualizer(domRoot, dat, params) {
 
   // the root elements for jQuery and D3 selections, respectively.
   // ALWAYS use these and never use naked $(__) or d3.select(__)
-  this.domRoot = domRoot;
-  this.domRootD3 = d3.select(domRoot.get(0));
+  this.domRoot = $('#' + domRootID);
+  this.domRootD3 = d3.select('#' + domRootID);
 
   // stick a new div.ExecutionVisualizer within domRoot and make that
   // the new domRoot:
@@ -165,8 +164,6 @@ function ExecutionVisualizer(domRoot, dat, params) {
   this.hasRendered = false;
 
   this.render(); // go for it!
-
-  allVisualizers.push(this);
 }
 
 
@@ -191,6 +188,7 @@ ExecutionVisualizer.prototype.render = function() {
     '<div id="codeDisplayDiv">\
        <div id="pyCodeOutputDiv"/>\
        <div id="editCodeLinkDiv"><a id="editBtn">Edit code</a></div>\
+       <div id="annotateLinkDiv"><a id="annotateBtn" href="javascript:void(0);">Annotate this step</a></div>\
        <div id="executionSlider"/>\
        <div id="vcrControls">\
          <button id="jmpFirstInstr", type="button">&lt;&lt; First</button>\
@@ -266,6 +264,13 @@ ExecutionVisualizer.prototype.render = function() {
     this.domRoot.find('#editBtn').click(function(){return false;}); // DISABLE the link!
   }
 
+  if (this.params.allowEditAnnotations !== undefined) {
+    this.allowEditAnnotations = this.params.allowEditAnnotations;
+  }
+  else {
+    this.allowEditAnnotations = true;
+  }
+
 
   if (this.params.embeddedMode) {
     this.params.hideOutput = true; // put this before hideOutput handler
@@ -278,6 +283,40 @@ ExecutionVisualizer.prototype.render = function() {
     if (this.params.codeDivHeight === undefined) {
       this.params.codeDivHeight = 400;
     }
+    
+    this.allowEditAnnotations = false;
+  }
+
+  myViz.editAnnotationMode = false;
+  myViz.allAnnotationBubbles = [];
+
+  if (this.allowEditAnnotations) {
+    var ab = this.domRoot.find('#annotateBtn');
+
+    ab.click(function() {
+      if (myViz.editAnnotationMode) {
+        ab.html('(rendering ...)');
+        $.each(myViz.allAnnotationBubbles, function(i, e) {
+          e.enterViewMode();
+        });
+
+        myViz.domRoot.find("#jmpFirstInstr,#jmpLastInstr,#jmpStepBack,#jmpStepFwd,#executionSlider").show();
+        ab.html('Annotate this step');
+      }
+      else {
+        ab.html('(rendering ...)');
+        $.each(myViz.allAnnotationBubbles, function(i, e) {
+          e.enterEditMode();
+        });
+
+        myViz.domRoot.find("#jmpFirstInstr,#jmpLastInstr,#jmpStepBack,#jmpStepFwd,#executionSlider").hide();
+        ab.html('Done annotating');
+      }
+      myViz.editAnnotationMode = !myViz.editAnnotationMode;
+    });
+  }
+  else {
+    this.domRoot.find('#annotateBtn').hide();
   }
 
   
@@ -1075,12 +1114,6 @@ ExecutionVisualizer.prototype.updateOutput = function(smoothTransition) {
     if (this.params.heightChangeCallback) {
       this.params.heightChangeCallback(this);
     }
-
-    if (this.params.redrawAllConnectorsOnHeightChange) {
-      $.each(allVisualizers, function(i, e) {
-        e.redrawConnectors();
-      });
-    }
   }
 
 }
@@ -1382,6 +1415,7 @@ ExecutionVisualizer.prototype.renderDataStructures = function() {
   // connectors and redraw them from scratch. doing so avoids mysterious
   // jsPlumb connector alignment issues when the visualizer's enclosing
   // div contains, say, a "position: relative;" CSS tag
+  // (which happens in the IPython Notebook)
   var existingConnectionEndpointIDs = d3.map();
 
   myViz.jsPlumbInstance.select().each(function(c) {
@@ -1398,7 +1432,12 @@ ExecutionVisualizer.prototype.renderDataStructures = function() {
     }
   });
 
-  myViz.jsPlumbInstance.reset(); // delete all connectors and state!!!
+  /*
+  existingConnectionEndpointIDs.forEach(function(varID, valueID) {
+    console.log('existingConnectionEndpointIDs:', varID, valueID);
+  });
+  console.log('---');
+  */
 
 
   // Heap object rendering phase:
@@ -1458,12 +1497,20 @@ ExecutionVisualizer.prototype.renderDataStructures = function() {
       .style('opacity', '0')
       .duration(500)
       .each('end', function() {
-        hrExit.remove();
+        hrExit
+          .each(function(d, idx) {
+            $(this).empty(); // crucial for garbage collecting jsPlumb connectors!
+          })
+          .remove();
         myViz.redrawConnectors();
       });
   }
   else {
-    hrExit.remove();
+    hrExit
+      .each(function(d, idx) {
+        $(this).empty(); // crucial for garbage collecting jsPlumb connectors!
+      })
+      .remove();
   }
 
 
@@ -1516,12 +1563,20 @@ ExecutionVisualizer.prototype.renderDataStructures = function() {
       .style('opacity', '0') /* fade out */
       .duration(500)
       .each('end', function() {
-        tlhExit.remove();
+        tlhExit
+          .each(function(d, idx) {
+            $(this).empty(); // crucial for garbage collecting jsPlumb connectors!
+          })
+          .remove();
         myViz.redrawConnectors();
       });
   }
   else {
-    tlhExit.remove();
+    tlhExit
+      .each(function(d, idx) {
+        $(this).empty(); // crucial for garbage collecting jsPlumb connectors!
+      })
+      .remove();
   }
 
 
@@ -1788,6 +1843,9 @@ ExecutionVisualizer.prototype.renderDataStructures = function() {
 
 
 
+  // TODO: coalesce code for rendering globals and stack frames,
+  // since there's so much copy-and-paste grossness right now
+
   // render all global variables IN THE ORDER they were created by the program,
   // in order to ensure continuity:
 
@@ -1841,58 +1899,44 @@ ExecutionVisualizer.prototype.renderDataStructures = function() {
         $(this).html(varname);
       }
       else {
+        // always delete and re-render the global var ...
+        // NB: trying to cache and compare the old value using,
+        // say -- $(this).attr('data-curvalue', valStringRepr) -- leads to
+        // a mysterious and killer memory leak that I can't figure out yet 
+        $(this).empty();
+
+        // make sure varname doesn't contain any weird
+        // characters that are illegal for CSS ID's ...
+        var varDivID = myViz.generateID('global__' + varnameToCssID(varname));
+
+        // need to get rid of the old connector in preparation for rendering a new one:
+        existingConnectionEndpointIDs.remove(varDivID);
+
         var val = curEntry.globals[varname];
-
-        // include type in repr to prevent conflating integer 5 with string "5"
-        var valStringRepr = String(typeof val) + ':' + String(val);
-
-        // SUPER HACK - retrieve previous value as a hidden attribute
-        // TODO: use the jQuery .data() method to store arbitrary data
-        // inside of a DOM element, so that we can avoid munging strings:
-        //   http://api.jquery.com/data/
-        var prevValStringRepr = $(this).attr('data-curvalue');
-
-        // IMPORTANT! only clear the div and render a new element if the
-        // value has changed
-        if (valStringRepr != prevValStringRepr) {
-          // TODO: render a transition
-
-          $(this).empty(); // crude but effective for now
-
-          if (isPrimitiveType(val)) {
-            renderPrimitiveObject(val, $(this));
-          }
-          else {
-            // add a stub so that we can connect it with a connector later.
-            // IE needs this div to be NON-EMPTY in order to properly
-            // render jsPlumb endpoints, so that's why we add an "&nbsp;"!
-
-            // make sure varname doesn't contain any weird
-            // characters that are illegal for CSS ID's ...
-            var varDivID = myViz.generateID('global__' + varnameToCssID(varname));
-            $(this).append('<div class="stack_pointer" id="' + varDivID + '">&nbsp;</div>');
-
-            assert(!connectionEndpointIDs.has(varDivID));
-            var heapObjID = myViz.generateID('heap_object_' + getRefID(val));
-            connectionEndpointIDs.set(varDivID, heapObjID);
-            //console.log('STACK->HEAP', varDivID, heapObjID);
-
-            // GARBAGE COLLECTION GOTCHA! we need to get rid of the old
-            // connector in preparation for rendering a new one:
-            existingConnectionEndpointIDs.remove(varDivID);
-          }
-
-          //console.log('CHANGED', varname, prevValStringRepr, valStringRepr);
+        if (isPrimitiveType(val)) {
+          renderPrimitiveObject(val, $(this));
         }
+        else {
+          // add a stub so that we can connect it with a connector later.
+          // IE needs this div to be NON-EMPTY in order to properly
+          // render jsPlumb endpoints, so that's why we add an "&nbsp;"!
+          $(this).append('<div class="stack_pointer" id="' + varDivID + '">&nbsp;</div>');
 
-        // SUPER HACK - set current value as a hidden string attribute
-        $(this).attr('data-curvalue', valStringRepr);
+          assert(!connectionEndpointIDs.has(varDivID));
+          var heapObjID = myViz.generateID('heap_object_' + getRefID(val));
+          connectionEndpointIDs.set(varDivID, heapObjID);
+          //console.log('STACK->HEAP', varDivID, heapObjID);
+        }
       }
-
     });
 
 
-  globalVarTableCells.exit().remove();
+
+  globalVarTableCells.exit()
+    .each(function(d, idx) {
+      $(this).empty(); // crucial for garbage collecting jsPlumb connectors!
+    })
+    .remove();
 
   globalVarTable.exit()
     .each(function(d, i) {
@@ -1900,6 +1944,8 @@ ExecutionVisualizer.prototype.renderDataStructures = function() {
       $(this).find('.stack_pointer').each(function(i, sp) {
         existingConnectionEndpointIDs.remove($(sp).attr('id'));
       });
+
+      $(this).empty(); // crucial for garbage collecting jsPlumb connectors!
     })
     .remove();
 
@@ -2005,55 +2051,43 @@ ExecutionVisualizer.prototype.renderDataStructures = function() {
           $(this).html(varname);
       }
       else {
+        // always delete and re-render the stack var ...
+        // NB: trying to cache and compare the old value using,
+        // say -- $(this).attr('data-curvalue', valStringRepr) -- leads to
+        // a mysterious and killer memory leak that I can't figure out yet 
+        $(this).empty();
+
+        // make sure varname and frame.unique_hash don't contain any weird
+        // characters that are illegal for CSS ID's ...
+        var varDivID = myViz.generateID(varnameToCssID(frame.unique_hash + '__' + varname));
+
+        // need to get rid of the old connector in preparation for rendering a new one:
+        existingConnectionEndpointIDs.remove(varDivID);
+
         var val = frame.encoded_locals[varname];
-
-        // include type in repr to prevent conflating integer 5 with string "5"
-        var valStringRepr = String(typeof val) + ':' + String(val);
-
-        // SUPER HACK - retrieve previous value as a hidden attribute
-        var prevValStringRepr = $(this).attr('data-curvalue');
-
-        // IMPORTANT! only clear the div and render a new element if the
-        // value has changed
-        if (valStringRepr != prevValStringRepr) {
-          // TODO: render a transition
-
-          $(this).empty(); // crude but effective for now
-
-          if (isPrimitiveType(val)) {
-            renderPrimitiveObject(val, $(this));
-          }
-          else {
-            // add a stub so that we can connect it with a connector later.
-            // IE needs this div to be NON-EMPTY in order to properly
-            // render jsPlumb endpoints, so that's why we add an "&nbsp;"!
-
-            // make sure varname and frame.unique_hash don't contain any weird
-            // characters that are illegal for CSS ID's ...
-            var varDivID = myViz.generateID(varnameToCssID(frame.unique_hash + '__' + varname));
-
-            $(this).append('<div class="stack_pointer" id="' + varDivID + '">&nbsp;</div>');
-
-            assert(!connectionEndpointIDs.has(varDivID));
-            var heapObjID = myViz.generateID('heap_object_' + getRefID(val));
-            connectionEndpointIDs.set(varDivID, heapObjID);
-            //console.log('STACK->HEAP', varDivID, heapObjID);
-
-            // GARBAGE COLLECTION GOTCHA! we need to get rid of the old
-            // connector in preparation for rendering a new one:
-            existingConnectionEndpointIDs.remove(varDivID);
-          }
-
-          //console.log('CHANGED', frame.unique_hash, varname, prevValStringRepr, valStringRepr);
+        if (isPrimitiveType(val)) {
+          renderPrimitiveObject(val, $(this));
         }
+        else {
+          // add a stub so that we can connect it with a connector later.
+          // IE needs this div to be NON-EMPTY in order to properly
+          // render jsPlumb endpoints, so that's why we add an "&nbsp;"!
+          $(this).append('<div class="stack_pointer" id="' + varDivID + '">&nbsp;</div>');
 
-        // SUPER HACK - set current value as a hidden string attribute
-        $(this).attr('data-curvalue', valStringRepr);
+          assert(!connectionEndpointIDs.has(varDivID));
+          var heapObjID = myViz.generateID('heap_object_' + getRefID(val));
+          connectionEndpointIDs.set(varDivID, heapObjID);
+          //console.log('STACK->HEAP', varDivID, heapObjID);
+        }
       }
     });
 
 
-  stackVarTableCells.exit().remove();
+  stackVarTableCells.exit()
+    .each(function(d, idx) {
+      $(this).empty(); // crucial for garbage collecting jsPlumb connectors!
+    })
+   .remove();
 
   stackVarTable.exit()
     .each(function(d, i) {
@@ -2061,6 +2095,8 @@ ExecutionVisualizer.prototype.renderDataStructures = function() {
         // detach all stack_pointer connectors for divs that are being removed
         existingConnectionEndpointIDs.remove($(sp).attr('id'));
       });
+
+      $(this).empty(); // crucial for garbage collecting jsPlumb connectors!
     })
     .remove();
 
@@ -2070,9 +2106,19 @@ ExecutionVisualizer.prototype.renderDataStructures = function() {
         // detach all stack_pointer connectors for divs that are being removed
         existingConnectionEndpointIDs.remove($(sp).attr('id'));
       });
+
+      $(this).empty(); // crucial for garbage collecting jsPlumb connectors!
     })
     .remove();
 
+
+  // NB: ugh, I'm not very happy about this hack, but it seems necessary
+  // for embedding within sophisticated webpages such as IPython Notebook
+
+  // delete all connectors. do this AS LATE AS POSSIBLE so that
+  // (presumably) the calls to $(this).empty() earlier in this function
+  // will properly garbage collect the connectors
+  myViz.jsPlumbInstance.reset();
 
   // re-render existing connectors ...
   existingConnectionEndpointIDs.forEach(function(varID, valueID) {
@@ -2292,3 +2338,324 @@ function getRefID(obj) {
   return obj[1];
 }
 
+
+// Annotation bubbles
+
+var qtipShared = {
+  show: {
+    ready: true, // show on document.ready instead of on mouseenter
+    delay: 0,
+    event: null,
+    effect: function() {$(this).show();}, // don't do any fancy fading because it screws up with scrolling
+  },
+  hide: {
+    fixed: true,
+    event: null,
+    effect: function() {$(this).hide();}, // don't do any fancy fading because it screws up with scrolling
+  },
+  style: {
+    classes: 'ui-tooltip-pgbootstrap', // my own customized version of the bootstrap style
+  },
+};
+
+
+function createSpeechBubble(domID, my, at, htmlContent, isInput) {
+  var hashID = '#' + domID;
+  $(hashID).qtip($.extend({}, qtipShared, {
+    content: htmlContent,
+    id: domID,
+    position: {
+      my: my,
+      at: at,
+      effect: null, // disable all cutesy animations
+    },
+  }));
+
+
+  if (isInput) {
+
+  }
+  else {
+    $('#ui-tooltip-' + domID + '-content').click(function() {
+      if (!$(hashID).data('qtip-minimized')) {
+        $(hashID)
+          .data('qtip-minimized', true)
+          .qtip('option', 'content.text', ' ');
+      }
+      else {
+        $(hashID)
+          .data('qtip-minimized', false)
+          .qtip('option', 'content.text', htmlContent);
+      }
+    });
+  }
+}
+
+
+// a speech bubble annotation to attach to:
+//   'codeline' - a line of code
+//   'frame'    - a stack frame
+//   'variable' - a variable within a stack frame
+//   'object'   - an object on the heap
+// (as determined by the 'type' param)
+//
+// domID is the ID of the element to attach to (without the leading '#' sign)
+function AnnotationBubble(type, domID) {
+  this.domID = domID;
+  this.hashID = '#' + domID;
+
+  this.type = type;
+
+  if (type == 'codeline') {
+    this.my = 'left center';
+    this.at = 'right center';
+  }
+  else if (type == 'frame') {
+    this.my = 'right center';
+    this.at = 'left center';
+  }
+  else if (type == 'variable') {
+    this.my = 'right center';
+    this.at = 'left center';
+  }
+  else if (type == 'object') {
+    this.my = 'bottom left';
+    this.at = 'top center';
+  }
+  else {
+    assert(false);
+  }
+
+  // possible states:
+  //   'invisible'
+  //   'edit'
+  //   'view'
+  //   'minimized'
+  //   'stub'
+  this.state = 'invisible';
+
+  this.text = ''; // the actual contents of the annotation bubble
+
+  this.qtipHidden = false; // is there a qtip object present but hidden? (TODO: kinda confusing)
+}
+
+AnnotationBubble.prototype.showStub = function() {
+  assert(this.state == 'invisible' || this.state == 'edit');
+  assert(this.text == '');
+
+  var myBubble = this; // to avoid name clashes with 'this' in inner scopes
+
+  // destroy then create a new tip:
+  this.destroyQTip();
+  $(this.hashID).qtip($.extend({}, qtipShared, {
+    content: ' ',
+    id: this.domID,
+    position: {
+      my: this.my,
+      at: this.at,
+      effect: null, // disable all cutesy animations
+    },
+    style: {
+      classes: 'ui-tooltip-pgbootstrap ui-tooltip-pgbootstrap-stub'
+    }
+  }));
+
+
+  $(this.qTipID())
+    .unbind('click') // unbind all old handlers
+    .click(function() {
+      myBubble.showEditor();
+    });
+
+  this.state = 'stub';
+}
+
+AnnotationBubble.prototype.showEditor = function() {
+  assert(this.state == 'stub' || this.state == 'view' || this.state == 'minimized');
+
+  var myBubble = this; // to avoid name clashes with 'this' in inner scopes
+
+  var ta = '<textarea class="bubbleInputText">' + this.text + '</textarea>';
+
+  // destroy then create a new tip:
+  this.destroyQTip();
+  $(this.hashID).qtip($.extend({}, qtipShared, {
+    content: ta,
+    id: this.domID,
+    position: {
+      my: this.my,
+      at: this.at,
+      effect: null, // disable all cutesy animations
+    }
+  }));
+
+  
+  $(this.qTipContentID()).find('textarea.bubbleInputText')
+    // set handler when the textarea loses focus
+    .blur(function() {
+      myBubble.text = $(this).val().trim(); // strip all leading and trailing spaces
+
+      if (myBubble.text) {
+        myBubble.showViewer();
+      }
+      else {
+        myBubble.showStub();
+      }
+    })
+    .focus(); // grab focus so that the user can start typing right away!
+
+  this.state = 'edit';
+}
+
+
+AnnotationBubble.prototype.bindViewerClickHandler = function() {
+  var myBubble = this;
+
+  $(this.qTipID())
+    .unbind('click') // unbind all old handlers
+    .click(function() {
+      if (myBubble.parentViz.editAnnotationMode) {
+        myBubble.showEditor();
+      }
+      else {
+        myBubble.minimizeViewer();
+      }
+    });
+}
+
+AnnotationBubble.prototype.showViewer = function() {
+  assert(this.state == 'edit');
+  assert(this.text); // must be non-empty!
+
+  // destroy then create a new tip:
+  this.destroyQTip();
+  $(this.hashID).qtip($.extend({}, qtipShared, {
+    content: this.text,
+    id: this.domID,
+    position: {
+      my: this.my,
+      at: this.at,
+      effect: null, // disable all cutesy animations
+    }
+  }));
+
+  this.bindViewerClickHandler();
+  this.state = 'view';
+}
+
+
+AnnotationBubble.prototype.minimizeViewer = function() {
+  assert(this.state == 'view');
+
+  var myBubble = this;
+
+  $(this.hashID).qtip('option', 'content.text', ' '); //hack to "minimize" its size
+
+  $(this.qTipID())
+    .unbind('click') // unbind all old handlers
+    .click(function() {
+      if (myBubble.parentViz.editAnnotationMode) {
+        myBubble.showEditor();
+      }
+      else {
+        myBubble.restoreViewer();
+      }
+    });
+
+  this.state = 'minimized';
+}
+
+AnnotationBubble.prototype.restoreViewer = function() {
+  assert(this.state == 'minimized');
+  $(this.hashID).qtip('option', 'content.text', this.text);
+  this.bindViewerClickHandler();
+  this.state = 'view';
+}
+
+// NB: actually DESTROYS the QTip object
+AnnotationBubble.prototype.makeInvisible = function() {
+  assert(this.state == 'stub' || this.state == 'edit');
+  this.destroyQTip();
+  this.state = 'invisible';
+}
+
+
+AnnotationBubble.prototype.destroyQTip = function() {
+  $(this.hashID).qtip('destroy');
+}
+
+AnnotationBubble.prototype.qTipContentID = function() {
+  return '#ui-tooltip-' + this.domID + '-content';
+}
+
+AnnotationBubble.prototype.qTipID = function() {
+  return '#ui-tooltip-' + this.domID;
+}
+
+
+AnnotationBubble.prototype.enterEditMode = function() {
+  assert(this.parentViz.editAnnotationMode);
+  if (this.state == 'invisible') {
+    this.showStub();
+
+    if (this.type == 'codeline') {
+      this.redrawCodelineBubble();
+    }
+  }
+}
+
+AnnotationBubble.prototype.enterViewMode = function() {
+  assert(!this.parentViz.editAnnotationMode);
+  if (this.state == 'stub') {
+    this.makeInvisible();
+  }
+  else if (this.state == 'edit') {
+    this.text = $(this.qTipContentID()).find('textarea.bubbleInputText').val().trim(); // strip all leading and trailing spaces
+
+    if (this.text) {
+      this.showViewer();
+
+      if (this.type == 'codeline') {
+        this.redrawCodelineBubble();
+      }
+    }
+    else {
+      this.makeInvisible();
+    }
+  }
+}
+
+AnnotationBubble.prototype.redrawCodelineBubble = function() {
+  assert(this.type == 'codeline');
+
+  if (isOutputLineVisibleForBubbles(this.domID)) {
+    if (this.qtipHidden) {
+      $(this.hashID).qtip('show');
+    }
+    else {
+      $(this.hashID).qtip('reposition');
+    }
+
+    this.qtipHidden = false;
+  }
+  else {
+    $(this.hashID).qtip('hide');
+    this.qtipHidden = true;
+  }
+}
+
+
+// NB: copy-and-paste from isOutputLineVisible with some minor tweaks
+function isOutputLineVisibleForBubbles(lineDivID) {
+  var pcod = $('#pyCodeOutputDiv');
+
+  var lineNoTd = $('#' + lineDivID);
+  var LO = lineNoTd.offset().top;
+
+  var PO = pcod.offset().top;
+  var ST = pcod.scrollTop();
+  var H = pcod.height();
+
+  // add a few pixels of fudge factor on the bottom end due to bottom scrollbar
+  return (PO <= LO) && (LO < (PO + H - 25));
+}
